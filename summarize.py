@@ -5,10 +5,19 @@ import pdfplumber
 import json
 import re
 import os
+from trafilatura import fetch_url, extract
 
-API_KEY = '' # put your key
-URL = '' #put your api url
+API_KEY = ''
+URL = ''
 
+
+custom_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache", 
+        }
 
 def extract_text_from_pdf(pdf_path):
     """
@@ -26,9 +35,9 @@ def extract_text_from_pdf(pdf_path):
         return None
     
 
-def fetch_data(pdf_data, temperature: float = 0.7, max_tokens: int = 10000):
+def fetch_data(content_type = 'normal', pdf_data=None, temperature: float = 0.7, max_tokens: int = 10000):
     url = URL
-    messages = f'''
+    messages_arxiv = f'''
         请以纯文本格式总结以下深度学习领域的论文。总结应清晰、简洁、信息量大，并严格按照以下结构和具体要求撰写：
         ** 论文： **
         {pdf_data}
@@ -118,7 +127,80 @@ def fetch_data(pdf_data, temperature: float = 0.7, max_tokens: int = 10000):
         冗余信息：去除一切不必要的重复或修饰性语言。
 
     '''
-    
+    messages_normal = messages_normal = f'''
+    请根据以下文件的内容生成结构化摘要：
+
+    输入内容：
+    {pdf_data}
+
+    摘要要求：
+
+    核心主题（20-40字）
+
+    用中性客观的语言概括材料的核心议题
+
+    避免使用比喻或夸张表述
+
+    关键要素（分条目列出）
+
+    [必需] 提取3-5个具有数据支撑的核心事实
+
+    [可选] 标注重要人物/机构及其关联观点
+
+    每个条目保持15-30字的紧凑表述
+
+    技术细节（如存在）
+
+    专业术语需附加10字内的白话解释
+
+    方法论的实现步骤用"动词+宾语"短句表述
+
+    价值判断
+
+    仅当原文明确给出时才保留结论
+
+    区分作者观点与客观事实
+
+    格式规范：
+    • 禁用任何符号标记（包括*#等）
+    • 数字统一用阿拉伯数字（如"3个步骤"）
+    • 英文专有名词首字母大写（如"Transformer模型"）
+    • 避免出现"本文""笔者"等主观指代
+
+    质量控制：
+
+    事实性错误需标注[需核实]
+
+    存在争议的观点标注[存在分歧]
+
+    模糊表述需改写为具体陈述
+
+    请严格按以下结构输出：
+    [主题]
+    ...
+    [要素]
+
+    ...
+
+    ...
+    ...
+    [补充说明]（可选）
+    ...
+
+    **总结要求**
+    格式：纯文本输出。不包含任何Markdown以外的格式，例如LaTeX代码、HTML标签等。不包含表格、图表、公式、代码块或其他非纯文本元素。
+
+    语言：使用清晰、准确、简洁的中文语言。避免口语化、含糊不清的表述。
+
+    字数控制：总字数控制在 750-1000 字之间。请严格遵循各部分建议的字数范围，以确保内容的平衡性。
+
+    可读性：逻辑严谨，分点阐述，段落间过渡自然。每一点都应有具体内容支撑，而非泛泛而谈，确保信息密度高且易于理解。
+
+    '''
+    if content_type == 'arxiv':
+        messages = messages_arxiv
+    else:
+        messages = messages_normal
     messages_payload = [
         {"role": "system", "content": messages},
         {"role": "user", "content": f"开始总结"}
@@ -133,7 +215,7 @@ def fetch_data(pdf_data, temperature: float = 0.7, max_tokens: int = 10000):
         "temperature": temperature,
         "max_tokens": max_tokens
     }
-
+    response = None
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload))
         response.raise_for_status() 
@@ -162,7 +244,7 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
     match = arxiv_pattern.match(url)
 
     if not match:
-        raise ValueError(f"错误： '{url}' 不是一个有效的 arXiv 链接。")
+        return '<<NOT A URL LINK>>'
 
     print(f"检测到有效的 arXiv 链接: {url}")
 
@@ -178,13 +260,6 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
 
     try:
         # 3. 下载文件
-        custom_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache", 
-        }
         print(f"正在下载文件: {pdf_url}...")
         response = requests.get(pdf_url, stream=True, timeout=15, headers=custom_headers)
         response.raise_for_status() # 检查 HTTP 请求是否成功
@@ -198,7 +273,7 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
         print(f"正在将文件发送至 LLM ...")
         file_path = output_dir + '/' + file_name
         pdf_info = extract_text_from_pdf(file_path)
-        data = fetch_data(pdf_info)
+        data = fetch_data(content_type='arxiv', pdf_data=pdf_info)
         print("文件成功发送给 LLM。LLM 的响应：")
         return data
 
@@ -208,6 +283,56 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
         raise RuntimeError(f"文件保存或读取错误：{e}")
     except Exception as e:
         raise RuntimeError(f"处理过程中发生未知错误：{e}")
+    
+def process_normal_link(url:str, output_dir:str = 'downloaded_url'):
+    os.makedirs(output_dir, exist_ok=True)
+    pattern = r'^(https?|ftp)://[^\s/$.?#].[^\s]*$'
+    is_url = re.match(pattern, url)
+    if not is_url:
+        return '<<ERRORR>>'
+    else:
+        pdf_patten = re.compile(r'\b(https?://([^/]+)(/[^\s\'"]+?\.pdf)(?:\?[^\s\'"]*)?\b)')
+        match = pdf_patten.match(url)
+        if not match:
+            # try:
+            html = fetch_url(url)  # 或直接输入HTML文本
+            markdown = extract(html, output_format="markdown")
+            safe_name = re.sub(r'[^\w\-_.]', '_', url.replace('://', '_'))  # 替换非法字符
+            file_name = f"{safe_name}.md"
+            file_path = os.path.join(output_dir, file_name) 
+            with open(file_path, 'w+', encoding='utf-8') as f:
+                f.write(markdown)
+            print(f"文件下载成功并保存至: {file_path}")
+            print(f"正在将文件发送至 LLM ...")
+            data = fetch_data(content_type='normal', pdf_data=markdown)
+            print("文件成功发送给 LLM。LLM 的响应：")
+            return data
+            # except:
+            #     raise RuntimeError(f"url请求下载错误")
+        else:
+            try:
+                response = requests.get(url, stream=True, timeout=15, headers=custom_headers)
+                response.raise_for_status()
+                url_name = match.group(2)
+                file_name = f"{url_name}.pdf"
+                file_path = os.path.join(output_dir, file_name) 
+                with open(file_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)            
+                print(f"文件下载成功并保存至: {file_path}")
+                print(f"正在将文件发送至 LLM ...")
+                file_path = output_dir + '/' + file_name
+                pdf_info = extract_text_from_pdf(file_path)
+                data = fetch_data(content_type='arxiv', pdf_data=pdf_info)
+                print("文件成功发送给 LLM。LLM 的响应：")
+                return data
+            except requests.exceptions.RequestException as e:
+                raise RuntimeError(f"网络请求错误或下载失败：{e}")
+            except IOError as e:
+                raise RuntimeError(f"文件保存或读取错误：{e}")
+            except Exception as e:
+                raise RuntimeError(f"处理过程中发生未知错误：{e}")
+
     
 @register(name="paper_sm", description="论文summarize", version="0.1", author="Regenin")
 class Paper_summarize(BasePlugin):
@@ -226,30 +351,40 @@ class Paper_summarize(BasePlugin):
         msg = ctx.event.text_message  # 这里的 event 即为 PersonNormalMessageReceived 的对象
         if msg[:10] == "/summarize":  # 
             data = process_arxiv_link(msg[11:])
-            extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
-
-            # 输出调试信息
+            if data != '<<NOT A URL LINK>>':
+                extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
+                ctx.add_return("reply", ["{}".format(extracted_text)])
+            else:
+                data = process_normal_link(msg[11:])
+                if data == '<<ERRORR>>':
+                    ctx.add_return("reply", ['错误，未找到url链接'])
+                else:
+                    extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
+                    ctx.add_return("reply", ["{}".format(extracted_text)])
             self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
-
-            # 回复消息 "hello, <发送者id>!"
-            ctx.add_return("reply", ["{}".format(extracted_text)])
-
-            # 阻止该事件默认行为（向接口获取回复）
             ctx.prevent_default()
+
+
 
     # 当收到群消息时触发
     @handler(GroupNormalMessageReceived)
     async def group_normal_message_received(self, ctx: EventContext):
         msg = ctx.event.text_message  # 这里的 event 即为 GroupNormalMessageReceived 的对象
-        if msg[:10] == "/summarize":  # 
+        if msg[:10] == "/summarize":  
             data = process_arxiv_link(msg[11:])
-            extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
-            # 输出调试信息  
+            if data != '<<NOT A URL LINK>>':
+                await ctx.send_message('group', ctx.event.launcher_id, ['找到链接，总结生成中，可能需要几分钟'])
+                extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
+                ctx.add_return("reply", ["{}".format(extracted_text)])
+            else:
+                data = process_normal_link(msg[11:])
+                if data == '<<ERRORR>>':
+                    ctx.add_return("reply", ['错误，未找到url链接'])
+                else:
+                    await ctx.send_message('group', ctx.event.launcher_id, ['找到链接，总结生成中，可能需要几分钟'])
+                    extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
+                    ctx.add_return("reply", ["{}".format(extracted_text)])
             self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
-
-            ctx.add_return("reply", ["{}".format(extracted_text)])
-
-            # 阻止该事件默认行为（向接口获取回复）
             ctx.prevent_default()
 
     # 插件卸载时触发
