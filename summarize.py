@@ -8,7 +8,7 @@ import os
 from trafilatura import fetch_url, extract
 
 API_KEY = ''
-URL = ''
+URL = '**url**/v1/chat/completions'
 
 
 custom_headers = {
@@ -127,7 +127,7 @@ def fetch_data(content_type = 'normal', pdf_data=None, temperature: float = 0.7,
         冗余信息：去除一切不必要的重复或修饰性语言。
 
     '''
-    messages_normal = messages_normal = f'''
+    messages_normal = f'''
     请根据以下文件的内容生成结构化摘要：
 
     输入内容：
@@ -219,7 +219,8 @@ def fetch_data(content_type = 'normal', pdf_data=None, temperature: float = 0.7,
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload))
         response.raise_for_status() 
-        return response.json()
+        response_data = response.json()
+        return response_data['choices'][0]['message']['content']
     except requests.exceptions.RequestException as e:
         print(f"请求 API 时发生错误: {e}")
         if response is not None:
@@ -240,7 +241,8 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
     """
     # 1. 判断是否为 arXiv 链接
     # 常见的 arXiv 链接模式：https://arxiv.org/abs/XXXX.XXXXX 或 https://arxiv.org/pdf/XXXX.XXXXX.pdf
-    arxiv_pattern = re.compile(r"https?://arxiv\.org/(abs|pdf)/(\d{4}\.\d{5}(v\d+)?)\.?(pdf)?")
+    # arxiv_pattern = re.compile(r"https?://arxiv\.org/(abs|pdf)/(\d{4}\.\d{5}(v\d+)?)\.?(pdf)?")
+    arxiv_pattern = re.compile(r"https?://(?:www\.)?arxiv\.org/(abs|pdf)/(\d{4}\.\d{5}(?:v\d+)?)(?:\.pdf)?")
     match = arxiv_pattern.match(url)
 
     if not match:
@@ -284,55 +286,57 @@ def process_arxiv_link(url: str, output_dir: str = "downloaded_arxiv", ):
     except Exception as e:
         raise RuntimeError(f"处理过程中发生未知错误：{e}")
     
-def process_normal_link(url:str, output_dir:str = 'downloaded_url'):
+def process_normal_link(url: str, output_dir: str = 'downloaded_url'):
     os.makedirs(output_dir, exist_ok=True)
     pattern = r'^(https?|ftp)://[^\s/$.?#].[^\s]*$'
     is_url = re.match(pattern, url)
+    
     if not is_url:
-        return '<<ERRORR>>'
-    else:
-        pdf_patten = re.compile(r'\b(https?://([^/]+)(/[^\s\'"]+?\.pdf)(?:\?[^\s\'"]*)?\b)')
-        match = pdf_patten.match(url)
-        if not match:
-            # try:
-            html = fetch_url(url)  # 或直接输入HTML文本
+        return '<<INVALID_URL>>'
+    
+    try:
+        # 尝试作为普通网页处理
+        print('识别到普通链接，尝试生成总结...')
+        response = requests.get(url, headers=custom_headers, timeout=15)
+        response.raise_for_status()  # 检查HTTP状态码
+        
+        # 检查内容类型
+        content_type = response.headers.get('Content-Type', '').lower()
+        
+        if 'pdf' in content_type or url.lower().endswith('.pdf'):
+            # 处理PDF内容
+            print('识别为PDF内容')
+            file_name = url.split('/')[-1].split('?')[0] or "document.pdf"
+            file_path = os.path.join(output_dir, file_name)
+            
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
+            
+            print(f"PDF保存至: {file_path}")
+            pdf_info = extract_text_from_pdf(file_path)
+            return fetch_data(content_type='arxiv', pdf_data=pdf_info)
+        
+        else:
+            # 处理HTML内容
+            print('识别为HTML内容')
+            html = response.text
             markdown = extract(html, output_format="markdown")
-            safe_name = re.sub(r'[^\w\-_.]', '_', url.replace('://', '_'))  # 替换非法字符
+            
+            if not markdown:
+                return f"<<ERROR>> markdown转换失败"
+            
+            safe_name = re.sub(r'[^\w\-_.]', '_', url.replace('://', '_'))
             file_name = f"{safe_name}.md"
-            file_path = os.path.join(output_dir, file_name) 
+            file_path = os.path.join(output_dir, file_name)
+            
             with open(file_path, 'w+', encoding='utf-8') as f:
                 f.write(markdown)
-            print(f"文件下载成功并保存至: {file_path}")
-            print(f"正在将文件发送至 LLM ...")
-            data = fetch_data(content_type='normal', pdf_data=markdown)
-            print("文件成功发送给 LLM。LLM 的响应：")
-            return data
-            # except:
-            #     raise RuntimeError(f"url请求下载错误")
-        else:
-            try:
-                response = requests.get(url, stream=True, timeout=15, headers=custom_headers)
-                response.raise_for_status()
-                url_name = match.group(2)
-                file_name = f"{url_name}.pdf"
-                file_path = os.path.join(output_dir, file_name) 
-                with open(file_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)            
-                print(f"文件下载成功并保存至: {file_path}")
-                print(f"正在将文件发送至 LLM ...")
-                file_path = output_dir + '/' + file_name
-                pdf_info = extract_text_from_pdf(file_path)
-                data = fetch_data(content_type='arxiv', pdf_data=pdf_info)
-                print("文件成功发送给 LLM。LLM 的响应：")
-                return data
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError(f"网络请求错误或下载失败：{e}")
-            except IOError as e:
-                raise RuntimeError(f"文件保存或读取错误：{e}")
-            except Exception as e:
-                raise RuntimeError(f"处理过程中发生未知错误：{e}")
-
+            print(f"网页内容保存至: {file_path}")
+            return fetch_data(content_type='normal', pdf_data=markdown)
+    
+    except Exception as e:
+        print(f"处理链接时出错: {str(e)}")
+        return f"<<ERROR>> {str(e)}"
     
 @register(name="paper_sm", description="论文summarize", version="0.1", author="Regenin")
 class Paper_summarize(BasePlugin):
@@ -356,8 +360,10 @@ class Paper_summarize(BasePlugin):
                 ctx.add_return("reply", ["{}".format(extracted_text)])
             else:
                 data = process_normal_link(msg[11:])
-                if data == '<<ERRORR>>':
+                if data == '<<INVALID_URL>>':
                     ctx.add_return("reply", ['错误，未找到url链接'])
+                elif data[:9] == '<<ERROR>>':
+                    ctx.add_return("reply", [f'错误，{data}'])
                 else:
                     extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
                     ctx.add_return("reply", ["{}".format(extracted_text)])
@@ -374,16 +380,16 @@ class Paper_summarize(BasePlugin):
             data = process_arxiv_link(msg[11:])
             if data != '<<NOT A URL LINK>>':
                 await ctx.send_message('group', ctx.event.launcher_id, ['找到链接，总结生成中，可能需要几分钟'])
-                extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
-                ctx.add_return("reply", ["{}".format(extracted_text)])
+                ctx.add_return("reply", ["{}".format(data)])
             else:
                 data = process_normal_link(msg[11:])
-                if data == '<<ERRORR>>':
+                if data == '<<INVALID_URL>>':
                     ctx.add_return("reply", ['错误，未找到url链接'])
+                elif data[:9] == '<<ERROR>>':
+                    ctx.add_return("reply", [f'错误，{data}'])
                 else:
                     await ctx.send_message('group', ctx.event.launcher_id, ['找到链接，总结生成中，可能需要几分钟'])
-                    extracted_text = data.get('choices', [{}])[0].get('message', {}).get('content')
-                    ctx.add_return("reply", ["{}".format(extracted_text)])
+                    ctx.add_return("reply", ["{}".format(data)])
             self.ap.logger.debug("hello, {}".format(ctx.event.sender_id))
             ctx.prevent_default()
 
